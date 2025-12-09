@@ -419,6 +419,32 @@
         return market.getPriceBeforeFees(highest);
     }
 
+    // === SEE 自定义：最近 N 天内有成交才允许自动卖 ===
+    const SEE_RECENT_SALES_DAYS = 30;      // 你可以改成 7 / 14 / 90 等
+    const SEE_RECENT_SALES_MIN_COUNT = 1;  // 至少卖出多少件算"有流动性"
+
+    function hasRecentSales(history, maxDays, minCount) {
+        if (!history) return false;
+
+        const now = Date.now();
+        const maxAge = maxDays * 24 * 60 * 60 * 1000;
+        let sold = 0;
+
+        // history: [dateString, priceInCents, qty]，按时间从旧到新
+        for (let i = history.length - 1; i >= 0; i--) {
+            const row = history[i];
+            const t = new Date(row[0]).getTime();
+            const age = now - t;
+            if (age > maxAge) break;
+
+            sold += row[2];
+            if (sold >= minCount) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // Calculates the listing price, before the fee.
     function calculateListingPriceBeforeFees(histogram) {
         if (typeof histogram === 'undefined' ||
@@ -1240,7 +1266,7 @@
             walletInfo['wallet_fee_minimum']
         ) +
             parseInt(walletInfo['wallet_fee_base'])));
-        const nPublisherFee = parseInt(Math.floor(publisherFee > 0 ? Math.max(receivedAmount * publisherFee, 1) : 0));
+        const nPublisherFee = parseInt(Math.floor(publisherFee > 0 ? Math.max(receivedAmount * publisherFee, 7) : 0));
         const nAmountToSend = receivedAmount + nSteamFee + nPublisherFee;
         return {
             steam_fee: nSteamFee,
@@ -1931,6 +1957,18 @@
                             logConsole('============================');
                             logConsole(itemName);
 
+                            // === SEE 自定义：最近 N 天没成交的物品就跳过，不自动卖 ===
+                            const priceAlgorithm = getSettingWithDefault(SETTING_PRICE_ALGORITHM);
+                            if (priceAlgorithm == 1 && !hasRecentSales(history, SEE_RECENT_SALES_DAYS, SEE_RECENT_SALES_MIN_COUNT)) {
+                                const itemId = item.assetid || item.id;
+
+                                logDOM(`${itemName} skipped: no sales in last ${SEE_RECENT_SALES_DAYS} days.`);
+                                $(`#${item.appid}_${item.contextid}_${itemId}`).css('background', COLOR_PRICE_NOT_CHECKED);
+
+                                // 当作成功处理（不重试），但不加入卖出队列
+                                return callback(true, cachedHistory && cachedListings);
+                            }
+
                             const sellPrice = calculateSellPriceBeforeFees(
                                 history,
                                 histogram,
@@ -1938,7 +1976,6 @@
                                 priceInfo.minPriceBeforeFees,
                                 priceInfo.maxPriceBeforeFees
                             );
-
 
                             logConsole(`Sell price: ${sellPrice / 100.0} (${market.getPriceIncludingFees(sellPrice) / 100.0})`);
 
